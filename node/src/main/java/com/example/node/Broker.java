@@ -1,3 +1,8 @@
+/**
+ * The Broker class acts as the central node in a Publisher-Subscriber system.
+ * It manages topics, handles client connections (publishers and subscribers),
+ * and coordinates message dissemination between publishers, subscribers, and other brokers.
+ */
 package com.example.node;
 
 import java.io.*;
@@ -9,95 +14,104 @@ import java.util.stream.Collectors;
 
 public class Broker {
 
-    private static final int MAX_PUB = 5;
-    private static final int MAX_SUB = 10;
+    private static final int MAX_PUB = 5; // Maximum allowed publishers
+    private static final int MAX_SUB = 10; // Maximum allowed subscribers
 
+    private static int publisherCount = 0; // Tracks connected publishers
+    private static int subscriberCount = 0; // Tracks connected subscribers
 
-    private static int publisherCount = 0;
-    private static int subscriberCount = 0;
+    private static final Map<String, Topic> topics = new HashMap<>(); // Stores all topics
+    private static final Map<String, List<Socket>> socketClients = new HashMap<>(); // Maps topic IDs to subscriber sockets
+    private static final List<Socket> brokerConnections = new ArrayList<>(); // Tracks connections to other brokers
+    private static final List<String> failedBrokers = new ArrayList<>(); // Tracks brokers that failed to connect
 
-    private static final Map<String, Topic> topics = new HashMap<>();
-
-    private static final Map<String, List<Socket>> socketClients = new HashMap<>();
-    private static final List<Socket> brokerConnections = new ArrayList<>();
-    private static final List<String> failedBrokers = new ArrayList<>();
-
+    /**
+     * Main entry point for the broker. Starts the server and handles incoming connections.
+     * @param args Command line arguments for port and broker connections.
+     * @throws IOException If there are issues starting the server.
+     */
     public static void main(String[] args) throws IOException {
         int port = Integer.parseInt(args[0]);
         ServerSocket serverSocket = new ServerSocket(port);
         System.out.println("Broker started on port: " + port);
 
-        // Connect to other Brokers
-        String brokersArg = "";
+        // Parse broker arguments for inter-broker connections
+        String brokersArg = parseBrokerArguments(args);
 
-        // Parse command line arguments
+        if (!brokersArg.isEmpty()) {
+            connectToOtherBrokers(brokersArg);
+            new Thread(new BrokerConnectionListener(brokersArg)).start();
+        }
+
+        // Accept connections from clients and brokers
+        while (true) {
+            Socket socket = serverSocket.accept();
+            handleIncomingConnection(socket);
+        }
+    }
+
+    /**
+     * Parses the command-line arguments to extract broker information.
+     * @param args Command-line arguments.
+     * @return A space-separated string of broker addresses.
+     */
+    private static String parseBrokerArguments(String[] args) {
+        StringBuilder brokers = new StringBuilder();
         for (int i = 1; i < args.length; i++) {
             if ("-b".equals(args[i])) {
-
-                StringBuilder brokers = new StringBuilder();
                 for (int j = i + 1; j < args.length; j++) {
                     brokers.append(args[j]).append(" ");
                 }
-                brokersArg = brokers.toString().trim();
                 break;
             }
         }
+        return brokers.toString().trim();
+    }
 
-        if (!brokersArg.isEmpty()) {
+    /**
+     * Handles incoming connections from clients or brokers.
+     * @param socket The incoming socket connection.
+     */
+    private static void handleIncomingConnection(Socket socket) {
+        new Thread(() -> {
+            try {
+                BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+                String type = in.readLine();
 
-            connectToOtherBrokers(brokersArg);
-            new Thread(new BrokerConnectionListener(args[2])).start();
-        }
-
-
-        // Accept connections from clients and other Brokers
-        while (true) {
-            Socket socket = serverSocket.accept();
-            new Thread(() -> {
-                try {
-                    BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-                    PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
-
-
-                    String type = in.readLine();
-                    if ("BROKER".equalsIgnoreCase(type)) {
-
-                        brokerConnections.add(socket);
-                        new Thread(new BrokerHandler(socket)).start();
-                        System.out.println("Accepted connection from another broker.");
-                    } else if ("SUB".equalsIgnoreCase(type) || "PUB".equalsIgnoreCase(type)) {
-
-//                        clientConnections.add(socket);
-                        new Thread(new ClientHandler(socket)).start();
-                        System.out.println("Accepted connection from a client.");
-
-
-                        if ("SUB".equalsIgnoreCase(type)) {
-                            subscriberCount++;
-                            if (subscriberCount > MAX_SUB) {
-                                //socket.close();
-                                sendResponse(socket, "close");
-                                subscriberCount--;
-                            }
-
-                        } else {
-                            publisherCount++;
-                            if (publisherCount > MAX_PUB) {
-                                //socket.close();
-                                sendResponse(socket, "close");
-                                publisherCount--;
-                            }
-
-                        }
-
-                    }
-                } catch (IOException e) {
-                    //e.printStackTrace();
-                    System.out.println(e.getMessage());
+                if ("BROKER".equalsIgnoreCase(type)) {
+                    brokerConnections.add(socket);
+                    new Thread(new BrokerHandler(socket)).start();
+                    System.out.println("Accepted connection from another broker.");
+                } else if ("SUB".equalsIgnoreCase(type) || "PUB".equalsIgnoreCase(type)) {
+                    new Thread(new ClientHandler(socket)).start();
+                    System.out.println("Accepted connection from a client.");
+                    manageClientType(type, socket);
                 }
-            }).start();
-        }
+            } catch (IOException e) {
+                System.out.println("Error handling connection: " + e.getMessage());
+            }
+        }).start();
+    }
 
+    /**
+     * Manages the client type (publisher or subscriber) and enforces limits.
+     * @param type The client type ("PUB" or "SUB").
+     * @param socket The socket connection for the client.
+     */
+    private static void manageClientType(String type, Socket socket) throws IOException {
+        if ("SUB".equalsIgnoreCase(type)) {
+            subscriberCount++;
+            if (subscriberCount > MAX_SUB) {
+                sendResponse(socket, "close");
+                subscriberCount--;
+            }
+        } else {
+            publisherCount++;
+            if (publisherCount > MAX_PUB) {
+                sendResponse(socket, "close");
+                publisherCount--;
+            }
+        }
     }
 
     // Connect to other Brokers
@@ -596,19 +610,24 @@ public class Broker {
 
     }
 
-    // Send response to the client
+    /**
+     * Sends a response message to the client or broker.
+     * @param socket The socket to send the response to.
+     * @param message The response message.
+     */
     private static void sendResponse(Socket socket, String message) {
-
         try {
             PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
             out.println(message);
         } catch (IOException e) {
-            //e.printStackTrace();
-            System.out.println(e.getMessage());
+            System.out.println("Error sending response: " + e.getMessage());
         }
     }
 
-    //Broadcast messages to other brokers
+    /**
+     * Broadcasts a message to all connected brokers.
+     * @param message The message to broadcast.
+     */
     private static void broadcastToBrokers(String message) {
         for (Socket brokerSocket : brokerConnections) {
             try {
