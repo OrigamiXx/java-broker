@@ -114,13 +114,17 @@ public class Broker {
         }
     }
 
-    // Connect to other Brokers
+    /**
+     * Connects to other brokers specified in the command-line arguments.
+     * @param brokersArg Space-separated list of broker addresses in the format IP:PORT.
+     */
     private static void connectToOtherBrokers(String brokersArg) {
         String[] brokers = brokersArg.split(" ");
         for (String broker : brokers) {
             String[] brokerInfo = broker.split(":");
             String brokerIp = brokerInfo[0];
             int brokerPort = Integer.parseInt(brokerInfo[1]);
+
             try {
                 Socket brokerSocket = new Socket(brokerIp, brokerPort);
                 PrintWriter out = new PrintWriter(brokerSocket.getOutputStream(), true);
@@ -133,10 +137,10 @@ public class Broker {
                 if (!failedBrokers.contains(broker)) {
                     failedBrokers.add(broker);
                 }
-
             }
         }
     }
+
 
     // Used to process messages from other Brokers
     private static class BrokerHandler implements Runnable {
